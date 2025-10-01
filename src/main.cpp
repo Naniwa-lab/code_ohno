@@ -4,7 +4,7 @@
 
 // ===== インスタンス定義 =====
 NAU7802 myScale;
-Adafruit_MCP4725 dac;//tnitn
+Adafruit_MCP4725 dac;
 
 // ===== ピン・定数 =====
 #define MCP4725_ADDR 0x60
