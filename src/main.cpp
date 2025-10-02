@@ -40,7 +40,7 @@ float slope = 1.0f;                       // 傾き（N/bit）
 bool experimentStarted = false;
 long loadcellOffset = 0;
 unsigned long experimentStartTime = 0;
-const unsigned long experimentDuration = 60000; // 300秒
+const unsigned long experimentDuration = 60000; // 60秒
 
 // ===== 関数プロトタイプ =====
 void loopMeasurement();
@@ -122,27 +122,43 @@ void loop() {
 
   loopMeasurement();
 }
-  
+
 void loopMeasurement() {
   unsigned long now = millis();
 
+  // ===== 0.5MPa到達・加工開始の非同期処理 =====
+  static bool reachedMaxPressure = false;       // 0.5MPa到達フラグ
+  static unsigned long maxPressureTime = 0;     // 到達時刻
+  static bool processingNotified = false;       // 加工開始通知済みフラグ
+
   // --- 圧力変化処理 ---
-  if (now - lastPressureUpdate >= pressureUpdateInterval) {
-    if (increasing) {
-      targetPressure += pressureStep;
-      if (targetPressure >= maxPressure) {
-        targetPressure = maxPressure;
-        increasing = false;
+  if (!reachedMaxPressure) {
+    if (now - lastPressureUpdate >= pressureUpdateInterval) {
+      if (increasing) {
+        targetPressure += pressureStep;
+        if (targetPressure >= maxPressure) {
+          targetPressure = maxPressure;
+          reachedMaxPressure = true;           // 到達フラグセット
+          maxPressureTime = now;               // 到達時刻記録
+          Serial.println(">>> 0.5MPa到達！5秒待機中...");
+        }
+      } else {
+        targetPressure -= pressureStep;
+        if (targetPressure <= minPressure) {
+          targetPressure = minPressure;
+          increasing = true;
+        }
       }
-    } else {
-      targetPressure -= pressureStep;
-      if (targetPressure <= minPressure) {
-        targetPressure = minPressure;
-        increasing = true;
-      }
+      setPressureMPa(targetPressure);
+      lastPressureUpdate = now;
     }
-    setPressureMPa(targetPressure);
-    lastPressureUpdate = now;
+  } else {
+    // 5秒待機後に加工開始通知
+    if (!processingNotified && now - maxPressureTime >= 5000) {
+      Serial.println(">>> 加工開始！");
+      processingNotified = true;
+      increasing = false;  // 0.5MPa到達後は圧力下降に移行
+    }
   }
 
   // --- ロードセル読み取り（一次関数でN換算） ---
@@ -152,7 +168,6 @@ void loopMeasurement() {
   }
   int32_t rawReading = lastReading;
 
-  // 荷重[N] = slope × (bit - オフセット)
   float correctedForce = slope * (rawReading - loadcellOffset);
 
   // --- レーザ変位計（移動平均） ---
