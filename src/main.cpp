@@ -40,7 +40,7 @@ float slope = 1.0f;                       // 傾き（N/bit）
 bool experimentStarted = false;
 long loadcellOffset = 0;
 unsigned long experimentStartTime = 0;
-const unsigned long experimentDuration = 60000; // 60秒
+const unsigned long experimentDuration = 65000; // 約65秒
 
 // ===== 関数プロトタイプ =====
 void loopMeasurement();
@@ -94,7 +94,7 @@ void setup() {
   Serial.println(" N/bit");
 
   Serial.println("実験開始まで少々お待ちください...(5秒)");
-  delay(5000);
+  delay(10000);
 
   Serial.println("Sキーを押すと実験を開始します。");
 }
@@ -126,14 +126,15 @@ void loop() {
 void loopMeasurement() {
   unsigned long now = millis();
 
-  static bool reachedMaxPressure = false;
-  static unsigned long maxPressureTime = 0;
-  static bool processingNotified = false;
+  // ===== 0.5MPa到達・加工開始の非同期処理 =====
+  static bool reachedMaxPressure = false;       // 0.5MPa到達フラグ
+  static unsigned long maxPressureTime = 0;     // 到達時刻
+  static bool processingNotified = false;       // 加工開始通知済みフラグ
 
-  // ===== 圧力制御 =====
+  // --- 圧力変化処理 ---
   if (now - lastPressureUpdate >= pressureUpdateInterval) {
 
-    // --- 昇圧フェーズ ---
+    // 昇圧フェーズ
     if (increasing && !reachedMaxPressure) {
       targetPressure += pressureStep;
       if (targetPressure >= maxPressure) {
@@ -144,12 +145,12 @@ void loopMeasurement() {
       }
     }
 
-    // --- 降圧フェーズ ---
+    // 降圧フェーズ
     else if (!increasing && processingNotified) {
       targetPressure -= pressureStep;
       if (targetPressure <= minPressure) {
         targetPressure = minPressure;
-        increasing = true;   // 次回実験用にリセット
+        increasing = true;   // 次回に備えてリセット
         Serial.println(">>> 0MPaに到達（減圧完了）");
       }
     }
@@ -158,22 +159,22 @@ void loopMeasurement() {
     lastPressureUpdate = now;
   }
 
-  // ===== 加工開始通知と減圧開始 =====
+  // --- 5秒待機後に加工開始通知（降圧開始） ---
   if (reachedMaxPressure && !processingNotified && now - maxPressureTime >= 5000) {
     Serial.println(">>> 加工開始！（降圧フェーズに移行）");
     processingNotified = true;
-    increasing = false; // 降圧開始
+    increasing = false;  // 降圧開始
   }
 
-  // ===== ロードセル読み取りなど（そのまま） =====
+  // --- ロードセル読み取り（一次関数でN換算） ---
   static int32_t lastReading = 0;
   if (myScale.available()) {
     lastReading = myScale.getReading();
   }
   int32_t rawReading = lastReading;
-
   float correctedForce = slope * (rawReading - loadcellOffset);
 
+  // --- レーザ変位計（移動平均） ---
   int rawLaser = analogRead(laserAnalogPina);
   float voltageLaser = rawLaser * (adcRefVoltage / 4095.0);
   float correctedVoltageLaser = 0.893 * voltageLaser + 0.125;
@@ -187,9 +188,11 @@ void loopMeasurement() {
   float avgVoltageLaser = sumV / count;
   float displacement_mm = avgVoltageLaser * 32.0 - 80.0;
 
+  // --- フィードバック圧力 ---
   float adcVoltage = readAnalogVoltage(regulatorFeedbackPin, adcRefVoltage);
   float feedbackPressure = 0.225 * (adcVoltage - 1.0);
 
+  // --- データ出力 ---
   Serial.print("目標圧:");
   Serial.print(targetPressure, 3);
   Serial.print(" MPa ");
@@ -209,4 +212,16 @@ void loopMeasurement() {
   Serial.println(" N");
 
   delay(100);
+}
+
+// ===== 補助関数 =====
+float readAnalogVoltage(int pin, float refVoltage) {
+  int raw = analogRead(pin);
+  return raw * (refVoltage / 4095.0) * adcCalibration;
+}
+
+void setPressureMPa(float pressure) {
+  float voltage = (pressure - 0.005) / 0.179;
+  int dacValue = constrain(voltage / 4.6 * 4095, 0, 4095);
+  dac.setVoltage(dacValue, false);
 }
