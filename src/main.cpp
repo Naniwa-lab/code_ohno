@@ -8,7 +8,7 @@ Adafruit_MCP4725 dac;
 
 // ===== ピン・定数 =====
 #define MCP4725_ADDR 0x60
-const int laserAnalogPina = A0;
+const int laserAnalogPin = A0;
 const int regulatorFeedbackPin = A1;
 
 // ===== 電圧補正 =====
@@ -40,7 +40,6 @@ float slope = 1.0f;                       // 傾き（N/bit）
 bool experimentStarted = false;
 long loadcellOffset = 0;
 unsigned long experimentStartTime = 0;
-const unsigned long experimentDuration = 65000; // 約65秒
 
 // ===== 関数プロトタイプ =====
 void loopMeasurement();
@@ -87,14 +86,14 @@ void setup() {
   Serial.print("ロードセルオフセット = ");
   Serial.println(loadcellOffset);
 
-  // ---- 傾き（一次関数の係数）を算出 ----
+  // ---- 傾き算出 ----
   slope = (MASS_KNOWN * GRAVITY) / (BIT_KNOWN);
   Serial.print("換算係数 slope = ");
   Serial.print(slope, 8);
   Serial.println(" N/bit");
 
   Serial.println("実験開始まで少々お待ちください...(5秒)");
-  delay(10000);
+  delay(5000);
 
   Serial.println("Sキーを押すと実験を開始します。");
 }
@@ -113,7 +112,8 @@ void loop() {
     return;
   }
 
-  if (millis() - experimentStartTime >= experimentDuration) {
+  // ---- 実験終了条件（降圧完了で停止）----
+  if (!increasing && targetPressure <= minPressure + 0.0001f) {
     setPressureMPa(0.0);
     experimentStarted = false;
     Serial.println("=== 実験終了 ===");
@@ -126,47 +126,47 @@ void loop() {
 void loopMeasurement() {
   unsigned long now = millis();
 
-  // ===== 0.5MPa到達・加工開始の非同期処理 =====
-  static bool reachedMaxPressure = false;       // 0.5MPa到達フラグ
-  static unsigned long maxPressureTime = 0;     // 到達時刻
-  static bool processingNotified = false;       // 加工開始通知済みフラグ
+  // ===== 状態管理 =====
+  static bool reachedMaxPressure = false;
+  static unsigned long maxPressureTime = 0;
+  static bool processingNotified = false;
 
   // --- 圧力変化処理 ---
-  if (now - lastPressureUpdate >= pressureUpdateInterval) {
-
-    // 昇圧フェーズ
-    if (increasing && !reachedMaxPressure) {
-      targetPressure += pressureStep;
-      if (targetPressure >= maxPressure) {
-        targetPressure = maxPressure;
-        reachedMaxPressure = true;
-        maxPressureTime = now;
-        Serial.println(">>> 0.5MPa到達！5秒待機中...");
+  if (!reachedMaxPressure) {
+    if (now - lastPressureUpdate >= pressureUpdateInterval) {
+      if (increasing) {
+        targetPressure += pressureStep;
+        if (targetPressure >= maxPressure) {
+          targetPressure = maxPressure;
+          reachedMaxPressure = true;
+          maxPressureTime = now;
+          Serial.println(">>> 0.5MPa到達！5秒待機中...");
+        }
       }
+      setPressureMPa(targetPressure);
+      lastPressureUpdate = now;
+    }
+  } else {
+    // 5秒待機後に加工開始通知
+    if (!processingNotified && now - maxPressureTime >= 5000) {
+      Serial.println(">>> 加工開始！");
+      processingNotified = true;
+      increasing = false;  // 降圧開始
+      reachedMaxPressure = false; // 再利用しない
     }
 
     // 降圧フェーズ
-    else if (!increasing && processingNotified) {
-      targetPressure -= pressureStep;
-      if (targetPressure <= minPressure) {
-        targetPressure = minPressure;
-        increasing = true;   // 次回に備えてリセット
-        Serial.println(">>> 0MPaに到達（減圧完了）");
+    if (processingNotified && now - lastPressureUpdate >= pressureUpdateInterval) {
+      if (!increasing) {
+        targetPressure -= pressureStep;
+        if (targetPressure < minPressure) targetPressure = minPressure;
+        setPressureMPa(targetPressure);
+        lastPressureUpdate = now;
       }
     }
-
-    setPressureMPa(targetPressure);
-    lastPressureUpdate = now;
   }
 
-  // --- 5秒待機後に加工開始通知（降圧開始） ---
-  if (reachedMaxPressure && !processingNotified && now - maxPressureTime >= 5000) {
-    Serial.println(">>> 加工開始！（降圧フェーズに移行）");
-    processingNotified = true;
-    increasing = false;  // 降圧開始
-  }
-
-  // --- ロードセル読み取り（一次関数でN換算） ---
+  // --- ロードセル読み取り ---
   static int32_t lastReading = 0;
   if (myScale.available()) {
     lastReading = myScale.getReading();
@@ -174,8 +174,8 @@ void loopMeasurement() {
   int32_t rawReading = lastReading;
   float correctedForce = slope * (rawReading - loadcellOffset);
 
-  // --- レーザ変位計（移動平均） ---
-  int rawLaser = analogRead(laserAnalogPina);
+  // --- レーザ変位計 ---
+  int rawLaser = analogRead(laserAnalogPin);
   float voltageLaser = rawLaser * (adcRefVoltage / 4095.0);
   float correctedVoltageLaser = 0.893 * voltageLaser + 0.125;
 
