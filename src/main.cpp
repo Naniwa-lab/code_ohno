@@ -8,7 +8,7 @@ Adafruit_MCP4725 dac;
 
 // ===== ピン・定数 =====
 #define MCP4725_ADDR 0x60
-const int laserAnalogPin = A0;
+const int laserAnalogPina = A0;
 const int regulatorFeedbackPin = A1;
 
 // ===== 電圧補正 =====
@@ -24,7 +24,7 @@ bool bufferFilled = false;
 // ===== 圧力制御用変数 =====
 float targetPressure = 0.0;
 bool increasing = true;
-const float pressureStep = 0.005;
+const float pressureStep = 0.0052;
 const float maxPressure = 0.5;
 const float minPressure = 0.0;
 const unsigned long pressureUpdateInterval = 300;
@@ -40,6 +40,7 @@ float slope = 1.0f;                       // 傾き（N/bit）
 bool experimentStarted = false;
 long loadcellOffset = 0;
 unsigned long experimentStartTime = 0;
+const unsigned long experimentDuration = 65000; // 約65秒
 
 // ===== 関数プロトタイプ =====
 void loopMeasurement();
@@ -64,12 +65,11 @@ void setup() {
   }
   Serial.println("MCP4725 OK");
 
-  // ---- センサウォームアップ ----
   Serial.println("センサを安定化中...(5秒)");
   setPressureMPa(0.0);
   delay(5000);
 
-  // ---- ロードセルオフセット測定 ----
+  // ---- ロードセルゼロ点キャリブレーション ----
   Serial.println("ロードセルゼロ点キャリブレーション中 (10秒)...");
   unsigned long calibStart = millis();
   long sum = 0;
@@ -80,20 +80,18 @@ void setup() {
       count++;
     }
   }
-  if (count > 0) {
-    loadcellOffset = sum / count;
-  }
+  if (count > 0) loadcellOffset = sum / count;
+
   Serial.print("ロードセルオフセット = ");
   Serial.println(loadcellOffset);
 
-  // ---- 傾き算出 ----
-  slope = (MASS_KNOWN * GRAVITY) / (BIT_KNOWN);
+  slope = (MASS_KNOWN * GRAVITY) / BIT_KNOWN;
   Serial.print("換算係数 slope = ");
   Serial.print(slope, 8);
   Serial.println(" N/bit");
 
   Serial.println("実験開始まで少々お待ちください...(5秒)");
-  delay(5000);
+  delay(10000);
 
   Serial.println("Sキーを押すと実験を開始します。");
 }
@@ -112,8 +110,7 @@ void loop() {
     return;
   }
 
-  // ---- 実験終了条件（降圧完了で停止）----
-  if (!increasing && targetPressure <= minPressure + 0.0001f) {
+  if (millis() - experimentStartTime >= experimentDuration) {
     setPressureMPa(0.0);
     experimentStarted = false;
     Serial.println("=== 実験終了 ===");
@@ -128,54 +125,65 @@ void loopMeasurement() {
 
   // ===== 状態管理 =====
   static bool reachedMaxPressure = false;
-  static unsigned long maxPressureTime = 0;
+  static unsigned long reachedTime = 0;
   static bool processingNotified = false;
 
-  // --- 圧力変化処理 ---
-  if (!reachedMaxPressure) {
-    if (now - lastPressureUpdate >= pressureUpdateInterval) {
-      if (increasing) {
-        targetPressure += pressureStep;
-        if (targetPressure >= maxPressure) {
-          targetPressure = maxPressure;
-          reachedMaxPressure = true;
-          maxPressureTime = now;
-          Serial.println(">>> 0.5MPa到達！5秒待機中...");
-        }
+  // --- 圧力制御 ---
+  if (now - lastPressureUpdate >= pressureUpdateInterval) {
+
+    // 昇圧中
+    if (increasing && !reachedMaxPressure) {
+      targetPressure += pressureStep;
+      if (targetPressure >= maxPressure) {
+        targetPressure = maxPressure;
+        reachedMaxPressure = true;
+        reachedTime = now;  // 到達時刻記録
+        // 表示は1秒遅延させる
       }
-      setPressureMPa(targetPressure);
-      lastPressureUpdate = now;
-    }
-  } else {
-    // 5秒待機後に加工開始通知
-    if (!processingNotified && now - maxPressureTime >= 5000) {
-      Serial.println(">>> 加工開始！");
-      processingNotified = true;
-      increasing = false;  // 降圧開始
-      reachedMaxPressure = false; // 再利用しない
     }
 
-    // 降圧フェーズ
-    if (processingNotified && now - lastPressureUpdate >= pressureUpdateInterval) {
-      if (!increasing) {
-        targetPressure -= pressureStep;
-        if (targetPressure < minPressure) targetPressure = minPressure;
-        setPressureMPa(targetPressure);
-        lastPressureUpdate = now;
+    // 降圧中
+    else if (!increasing && processingNotified) {
+      targetPressure -= pressureStep;
+      if (targetPressure <= minPressure) {
+        targetPressure = minPressure;
+        increasing = true;
+        Serial.println(">>> 0MPaに到達（減圧完了）");
       }
+    }
+
+    // 昇圧完了後は0.5MPaを保持
+    if (reachedMaxPressure && !processingNotified) {
+      targetPressure = maxPressure;
+    }
+
+    setPressureMPa(targetPressure);
+    lastPressureUpdate = now;
+  }
+
+  // --- 0.5MPa到達後1秒経過で通知 ---
+  if (reachedMaxPressure && !processingNotified && now - reachedTime >= 1000) {
+    Serial.println(">>> 0.5MPa到達！5秒待機中...");
+    processingNotified = true;  // フラグ使用
+  }
+
+  // --- 3秒後に降圧開始 ---
+  if (processingNotified && reachedMaxPressure && increasing) {
+    static unsigned long startProcessingTime = now;
+    if (now - startProcessingTime >= 3000) {
+      Serial.println(">>> 加工開始！（降圧フェーズに移行）");
+      increasing = false;
     }
   }
 
   // --- ロードセル読み取り ---
   static int32_t lastReading = 0;
-  if (myScale.available()) {
-    lastReading = myScale.getReading();
-  }
+  if (myScale.available()) lastReading = myScale.getReading();
   int32_t rawReading = lastReading;
   float correctedForce = slope * (rawReading - loadcellOffset);
 
   // --- レーザ変位計 ---
-  int rawLaser = analogRead(laserAnalogPin);
+  int rawLaser = analogRead(laserAnalogPina);
   float voltageLaser = rawLaser * (adcRefVoltage / 4095.0);
   float correctedVoltageLaser = 0.893 * voltageLaser + 0.125;
 
@@ -221,7 +229,13 @@ float readAnalogVoltage(int pin, float refVoltage) {
 }
 
 void setPressureMPa(float pressure) {
-  float voltage = (pressure - 0.005) / 0.179;
+  // --- 実測補正 (上昇0.002MPa, スケール誤差1.02倍を補正) ---
+  float correctedPressure = (pressure - 0.002) / 1.02;
+
+  // --- DAC出力電圧計算 ---
+  float voltage = (correctedPressure - 0.005) / 0.179;
+
+  // --- DAC値へ変換 ---
   int dacValue = constrain(voltage / 4.6 * 4095, 0, 4095);
   dac.setVoltage(dacValue, false);
 }
