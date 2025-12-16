@@ -13,7 +13,7 @@ time.sleep(2)  # シリアル安定化
 phase = 0  # 0=未開始, 1=昇圧中, 2=加工中(降圧)
 data = []
 experiment_start_time = None
-recording = True  # データ記録のON/OFF
+recording = False  # 実験開始まではFalse
 
 # --- 保存先フォルダ設定 ---
 SAVE_DIR = "C:/Users/taioh/PlatformIO/Projects/code_3/data"
@@ -37,19 +37,19 @@ def save_csv(data, phase):
     os.startfile(filepath)
     print(f"✅ 完了：{filepath} に保存されました。")
 
-
 # --- メイン処理 ---
 try:
     print("Arduinoウォームアップ待ち...")
     while True:
         if ser.in_waiting:
-            line = ser.readline().decode('utf-8', errors='replace').strip()
+            line = ser.read_until(b'\n').decode('utf-8', errors='replace').strip()
             print(line)
             if "Sキーを押すと実験を開始します。" in line:
                 ser.write(b'S')
                 experiment_start_time = time.time()
                 print("Arduinoに実験開始命令を送信しました。")
                 phase = 1
+                recording = True
                 break
 
     print("データ受信中...")
@@ -60,14 +60,15 @@ try:
                 continue
             print("受信:", repr(line))
 
+            # --- 常にフェーズで recording を制御 ---
+            if phase in (1, 2):
+                recording = True
+
             # --- フェーズ制御 ---
-            # ★変更点1: 0.5MPa到達時はまだ保存しない（データを5秒分取るため）
             if "0.5MPa到達" in line and phase == 1:
                 print(">>> 昇圧フェーズ最終到達（保持中...）")
-                # ここでは保存せず、保持中データをそのまま記録し続ける
                 continue
 
-            # ★変更点2: 「加工開始！」が出たタイミングで昇圧データを保存
             if "加工開始" in line and phase == 1:
                 print(">>> 昇圧データ（0.5MPa含む）を保存します。")
                 save_csv(data, phase=1)
@@ -77,22 +78,42 @@ try:
                 continue
 
             if "実験終了" in line and phase == 2:
-                print(">>> 実験終了、CSV保存")
+                print(">>> 実験終了、CSV保存（残りデータ読取り中...）")
+                # 残りバッファ読取り
+                end_time = time.time() + 5  # 5秒間追加読み取り
+                while time.time() < end_time:
+                    if ser.in_waiting:
+                        extra = ser.readline().decode('utf-8', errors='replace').strip()
+                        print("追加:", repr(extra))
+                        try:
+                            pressure_match = re.search(r"目標圧\s*:\s*(-?[0-9.]+)", extra)
+                            displacement_match = re.search(r"変位\s*:\s*(-?[0-9.]+)", extra)
+                            feedback_match = re.search(r"FB圧力\s*:\s*(-?[0-9.]+)", extra)
+                            loadcell_match = re.search(r"荷重\(補正後\)\s*:\s*(-?[0-9.]+)", extra)
+
+                            if all([pressure_match, displacement_match, feedback_match, loadcell_match]):
+                                pressure = float(pressure_match.group(1))
+                                displacement = float(displacement_match.group(1))
+                                feedback = float(feedback_match.group(1))
+                                loadcell = float(loadcell_match.group(1))
+                                data.append([pressure, displacement, feedback, loadcell])
+                        except:
+                            pass
+
                 recording = False
                 save_csv(data, phase=2)
                 break
 
             # --- データ記録 ---
-            # ★変更点3: recordingがTrueのときのみ記録（昇圧も降圧も）
             if not recording:
                 continue
 
             try:
-                # 正規表現で数値抽出
-                pressure_match = re.search(r"目標圧\s*:\s*([0-9.]+)", line)
-                displacement_match = re.search(r"変位\s*:\s*([0-9.]+)", line)
-                feedback_match = re.search(r"FB圧力\s*:\s*([0-9.]+)", line)
-                loadcell_match = re.search(r"荷重\(補正後\)\s*:\s*([0-9.]+)", line)
+                # 正規表現で数値抽出（負の値対応）
+                pressure_match = re.search(r"目標圧\s*:\s*(-?[0-9.]+)", line)
+                displacement_match = re.search(r"変位\s*:\s*(-?[0-9.]+)", line)
+                feedback_match = re.search(r"FB圧力\s*:\s*(-?[0-9.]+)", line)
+                loadcell_match = re.search(r"荷重\(補正後\)\s*:\s*(-?[0-9.]+)", line)
 
                 if all([pressure_match, displacement_match, feedback_match, loadcell_match]):
                     pressure = float(pressure_match.group(1))

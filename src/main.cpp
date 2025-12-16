@@ -25,7 +25,7 @@ bool bufferFilled = false;
 float targetPressure = 0.0;
 bool increasing = true;
 const float pressureStep = 0.1;           // 1ステップ = 0.1MPa
-const float maxPressure = 0.5;
+const float maxPressure = 0.6;
 const float minPressure = 0.0;
 const unsigned long pressureStepInterval = 5000; // 5秒ごとにステップ更新
 unsigned long lastPressureStepTime = 0;
@@ -70,7 +70,6 @@ void setup() {
 
   // ---- ロードセルゼロ点キャリブレーション ----
   Serial.println("ロードセルゼロ点キャリブレーション中 (10秒)...");
-
   unsigned long calibStart = millis();
   long sum = 0;
   int count = 0;
@@ -91,7 +90,7 @@ void setup() {
   Serial.println(" N/bit");
 
   Serial.println("実験開始まで少々お待ちください...(5秒)");
-  delay(10000);
+  delay(30000);
 
   Serial.println("Sキーを押すと実験を開始します。");
 }
@@ -127,29 +126,72 @@ void loopMeasurement() {
   // --- 階段的圧力制御 ---
   if (now - lastPressureStepTime >= pressureStepInterval) {
     if (increasing && !reachedMaxPressure) {
-      // 昇圧ステップ
       targetPressure += pressureStep;
       if (targetPressure >= maxPressure) {
         targetPressure = maxPressure;
         reachedMaxPressure = true;
         reachedTime = now;
-        Serial.println(">>> 0.5MPa到達！（保持中...）");
+        Serial.println(">>> 0.6MPa到達！（保持中...）");
       }
       setPressureMPa(targetPressure);
     }
     else if (!increasing && processingNotified) {
-      // 降圧ステップ
       targetPressure -= pressureStep;
       if (targetPressure <= minPressure) {
         targetPressure = minPressure;
-        setPressureMPa(0.0);  // 最後に0MPa
+        setPressureMPa(0.0);
+
+        // --- 0MPaで5秒間データ出力 ---
+        unsigned long zeroStart = millis();
+        while (millis() - zeroStart < 5000) {
+          // ロードセル読み取り
+          static int32_t lastReading = 0;
+          if (myScale.available()) lastReading = myScale.getReading();
+          int32_t rawReading = lastReading;
+          float correctedForce = slope * (rawReading - loadcellOffset);
+
+          // レーザ変位計
+          int rawLaser = analogRead(laserAnalogPina);
+          float voltageLaser = rawLaser * (adcRefVoltage / 4095.0);
+          float correctedVoltageLaser = 0.893 * voltageLaser + 0.125;
+
+          float sumV = 0.0;
+          voltageBuffer[bufferIndex] = correctedVoltageLaser;
+          bufferIndex = (bufferIndex + 1) % averageCount;
+          if (bufferIndex == 0) bufferFilled = true;
+          int count = bufferFilled ? averageCount : bufferIndex;
+          for (int i = 0; i < count; i++) sumV += voltageBuffer[i];
+          float avgVoltageLaser = sumV / count;
+          float displacement_mm = avgVoltageLaser * 30.0;
+
+          // フィードバック圧力
+          float adcVoltage = readAnalogVoltage(regulatorFeedbackPin, adcRefVoltage);
+          float feedbackPressure = 0.225 * (adcVoltage - 1.0);
+
+          // データ出力
+          Serial.print("目標圧:");
+          Serial.print(targetPressure, 3);
+          Serial.print(" MPa ");
+          Serial.print("変位:");
+          Serial.print(displacement_mm, 3);
+          Serial.print(" mm ");
+          Serial.print("FB圧力:");
+          Serial.print(feedbackPressure, 3);
+          Serial.print(" MPa ");
+          Serial.print("荷重(補正後):");
+          Serial.print(correctedForce, 2);
+          Serial.println(" N");
+
+          delay(100);
+        }
+
         Serial.println(">>> 0MPaに到達（減圧完了）");
         Serial.println("=== 実験終了 ===");
         experimentStarted = false;
         return;
       }
       else {
-        setPressureMPa(targetPressure); // 降圧でもDAC更新
+        setPressureMPa(targetPressure);
       }
     }
     lastPressureStepTime = now;
@@ -157,7 +199,7 @@ void loopMeasurement() {
 
   // --- 0.5MPa保持（5秒データ取得） ---
   if (reachedMaxPressure && !processingNotified) {
-    if (now - reachedTime >= 5000) {  // 5秒保持
+    if (now - reachedTime >= 5000) {
       Serial.println(">>> 加工開始！（降圧フェーズに移行）");
       increasing = false;
       processingNotified = true;
@@ -220,7 +262,7 @@ void setPressureMPa(float pressure) {
   if (pressure < 0.02) correctedPressure = pressure * 0.8;
   if (correctedPressure < 0) correctedPressure = 0.0;
 
-  float voltage = (correctedPressure - 0.005) / 0.179;
+  float voltage = (correctedPressure - 0.005) / 0.176  +0.005;
   int dacValue = constrain(voltage / 4.6 * 4095, 0, 4095);
   dac.setVoltage(dacValue, false);
 }
