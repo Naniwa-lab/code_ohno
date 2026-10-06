@@ -2,6 +2,10 @@
 	"folders": [
 		{
 			"path": ".."
+		},
+		{
+			"name": "aiai",
+			"path": "../../Users/taioh/OneDrive/Documents/PlatformIO/Projects/aiai"
 		}
 	],
 	"settings": {}
