@@ -8,7 +8,7 @@ plt.rcParams["font.family"] = ["Yu Gothic", "MS Gothic", "Meiryo", "sans-serif"]
 # ======================
 # CSV読み込み
 # ======================
-df = pd.read_csv(r"C:\code_3\data\ex1_100.csv")
+df = pd.read_csv(r"C:\code_3\data\ex1_200_swing.csv")
 
 time = df["Time"].to_numpy()
 
@@ -121,21 +121,21 @@ axes[0].plot(time, l, marker=".", markersize=3, linestyle="none", color="tab:blu
 axes[0].set_ylabel("l  [中点間距離]")
 axes[0].set_xlabel("Time [s]")
 axes[0].set_title("中点①②-中点③④ 間の距離 l")
-axes[0].set_ylim(400, 800)  # 縦軸範囲を固定
+axes[0].set_ylim(140, 230)  # 縦軸範囲を固定
 axes[0].grid(True)
 
 axes[1].plot(time, alpha, marker=".", markersize=3, linestyle="none", color="tab:orange")
 axes[1].set_ylabel("α [deg]")
 axes[1].set_xlabel("Time [s]")
 axes[1].set_title("③④の垂線 と 中点同士の直線 のなす角 α")
-axes[1].set_ylim(-50, 40)  # 縦軸範囲を固定
+axes[1].set_ylim(-20, 20)  # 縦軸範囲を固定
 axes[1].grid(True)
 
 axes[2].plot(time, beta, marker=".", markersize=3, linestyle="none", color="tab:green")
 axes[2].set_ylabel("β [deg]")
 axes[2].set_xlabel("Time [s]")
 axes[2].set_title("①②の直線 と lの直線(中点同士を結ぶ直線) のなす角 β (0〜180度)")
-axes[2].set_ylim(60, 120)  # 縦軸範囲を固定
+axes[2].set_ylim(80, 100)  # 縦軸範囲を固定
 axes[2].grid(True)
 
 plt.tight_layout()
@@ -180,19 +180,28 @@ print(f"beta  : 主要周波数 = {f_peak_beta:.3f} Hz  (周期 = {period_beta:.
 
 f_max_plot = 10.0
 
+# ======================
+# FFT縦軸範囲の手動指定 (下限, 上限)
+# ======================
+FFT_YLIM_L     = (0, 5)    # l     の縦軸範囲
+FFT_YLIM_ALPHA = (0, 5)    # α     の縦軸範囲
+FFT_YLIM_BETA  = (0, 5)    # β     の縦軸範囲
+
 fig2, axes2 = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
 
-for ax, amp, color, label, f_peak, period in zip(
+for ax, amp, color, label, f_peak, period, ylim in zip(
     axes2,
     [amp_l, amp_alpha, amp_beta],
     ["tab:blue", "tab:orange", "tab:green"],
     ["l", "α", "β"],
     [f_peak_l, f_peak_alpha, f_peak_beta],
     [period_l, period_alpha, period_beta],
+    [FFT_YLIM_L, FFT_YLIM_ALPHA, FFT_YLIM_BETA],
 ):
     ax.plot(freqs, amp, color=color)
     ax.axvline(f_peak, color="red", linestyle="--", linewidth=1)
     ax.set_xlim(0, f_max_plot)
+    ax.set_ylim(*ylim)  # 縦軸範囲を固定
     ax.set_ylabel(f"|{label}| 振幅")
     ax.set_xlabel("Frequency [Hz]")
     ax.set_title(f"{label} のFFT振幅スペクトル  (主要周波数={f_peak:.3f}Hz, 周期={period:.3f}s)")
